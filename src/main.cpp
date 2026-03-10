@@ -21,9 +21,9 @@ const char *data_pub = "@shadow/data/update";
 PubSubClient mqttClient(wifiClient);
 String publishMessage;
 
-#define TFT_CS    33
-#define TFT_RST   32
-#define TFT_DC    25
+#define TFT_CS 33
+#define TFT_RST 32
+#define TFT_DC 25
 
 #define TRIG1 16
 #define ECHO1 17
@@ -31,29 +31,29 @@ String publishMessage;
 #define TRIG2 5
 #define ECHO2 36
 
-#define RED_LED   26
+#define RED_LED 26
 #define GREEN_LED 4
-#define BUZZER    27
+#define BUZZER 27
 
 #define SENSOR_DISTANCE_CM 26.0
-#define TRIGGER_DISTANCE   10.0
+#define TRIGGER_DISTANCE 30.0
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
 #define BUZZER_CHANNEL 0
 #define BUZZER_FREQ 1000
 #define BUZZER_RESOLUTION 8
-
+int speedCounter = 1;
 unsigned long t_start = 0;
-unsigned long t_end   = 0;
+unsigned long t_end = 0;
 unsigned long t_buzzer = 0;
+unsigned long lastDetectTime = 0;
+const int detectCooldown = 100;
 
-bool sensor1_triggered = false;
+bool sensor_triggered = false;
 
 float speed_kmh = 0;
 String status = "";
-
-//////////////////////////////////////////////////
 
 void setup_wifi()
 {
@@ -74,17 +74,15 @@ void setup_wifi()
   Serial.println(WiFi.localIP());
 }
 
-//////////////////////////////////////////////////
-
 void sendToFirebase(float speed_kmh, String status)
 {
   HTTPClient http;
 
-  String url = "https://iotspeed-73afe-default-rtdb.asia-southeast1.firebasedatabase.app/sensorData.json";   // ใส่ Firebase URL ตรงนี้
+  String url = "https://iotspeed-73afe-default-rtdb.asia-southeast1.firebasedatabase.app/sensorData.json"; // ใส่ Firebase URL ตรงนี้
 
-  String speedID = "speed" + String(millis());
+  String speedID = "speed" + String(speedCounter++);
 
-  String payload = "{ \"" + speedID+ "\": {";
+  String payload = "{ \"" + speedID + "\": {";
   payload += "\"speed\": " + String(speed_kmh, 2) + ",";
   payload += "\"status\": \"" + status + "\"";
   payload += "} }";
@@ -105,9 +103,6 @@ void sendToFirebase(float speed_kmh, String status)
 
   http.end();
 }
-
-//////////////////////////////////////////////////
-
 void reconnectMQTT()
 {
   while (!mqttClient.connected())
@@ -127,34 +122,20 @@ void reconnectMQTT()
   }
 }
 
-//////////////////////////////////////////////////
-
 float readDistance(int trigPin, int echoPin)
 {
-  float total = 0;
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
 
-  for (int i = 0; i < 5; i++)
-  {
-    digitalWrite(trigPin, LOW);
-    delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
 
-    digitalWrite(trigPin, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(trigPin, LOW);
-
-    long duration = pulseIn(echoPin, HIGH, 30000);
-    float distance = (duration * 0.0343) / 2;
-
-    total += distance;
-
-    delay(5);
-  }
-
-  return total / 5.0;
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  float distance = (duration * 0.0343) / 2;
+  delay(5);
+  return distance;
 }
-
-//////////////////////////////////////////////////
-
 void setup()
 {
   Serial.begin(115200);
@@ -162,6 +143,7 @@ void setup()
   setup_wifi();
 
   mqttClient.setServer(mqttServer, mqttPort);
+  mqttClient.setBufferSize(512);
 
   tft.begin();
   tft.setRotation(1);
@@ -181,10 +163,12 @@ void setup()
   ledcWrite(BUZZER_CHANNEL, 0);
 }
 
-//////////////////////////////////////////////////
-
 void loop()
 {
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    setup_wifi();
+  }
   if (!mqttClient.connected())
   {
     reconnectMQTT();
@@ -193,24 +177,24 @@ void loop()
   mqttClient.loop();
 
   float d1 = readDistance(TRIG1, ECHO1);
-  delay(20);
   float d2 = readDistance(TRIG2, ECHO2);
 
-  if (!sensor1_triggered && d1 < TRIGGER_DISTANCE)
+  if (!sensor_triggered && d1 < TRIGGER_DISTANCE && millis() - lastDetectTime > detectCooldown)
   {
     t_start = millis();
-    sensor1_triggered = true;
-    Serial.println("Sensor 1 Triggered");
+    sensor_triggered = true;
+
+    // Serial.println("Sensor 1 Triggered");
   }
 
-  if (sensor1_triggered && d2 < TRIGGER_DISTANCE)
+  if (sensor_triggered && d2 < TRIGGER_DISTANCE)
   {
     t_end = millis();
     t_buzzer = t_end + 1000;
-
     float deltaT = (float)(t_end - t_start) / 1000.0;
+    // Serial.println("Sensor 2 Triggered");
 
-    if (deltaT > 0.01 && deltaT < 5)
+    if (deltaT > 0.05 && deltaT < 3)
     {
       float speed_cm_s = SENSOR_DISTANCE_CM / deltaT;
       speed_kmh = speed_cm_s * 0.036;
@@ -228,15 +212,15 @@ void loop()
 
       tft.setTextSize(3);
 
-      tft.setCursor(20,30);
+      tft.setCursor(20, 30);
       tft.setTextColor(ILI9341_GREEN);
       tft.print("Speed:");
 
-      tft.setCursor(20,80);
-      tft.print(speed_kmh,2);
+      tft.setCursor(20, 80);
+      tft.print(speed_kmh, 2);
       tft.print(" km/h");
 
-      tft.setCursor(20,140);
+      tft.setCursor(20, 140);
 
       if (speed_kmh > 2)
       {
@@ -248,10 +232,9 @@ void loop()
         digitalWrite(RED_LED, HIGH);
         digitalWrite(GREEN_LED, LOW);
 
-        while (millis() < t_buzzer)
-        {
-          ledcWrite(BUZZER_CHANNEL, 10);
-        }
+        ledcWrite(BUZZER_CHANNEL, 10);
+        delay(300);
+        ledcWrite(BUZZER_CHANNEL, 0);
 
         ledcWrite(BUZZER_CHANNEL, 0);
 
@@ -274,8 +257,7 @@ void loop()
       sendToFirebase(speed_kmh, status);
     }
 
-    sensor1_triggered = false;
+    sensor_triggered = false;
+    lastDetectTime = millis();
   }
-
-  delay(50);
 }
