@@ -1,3 +1,4 @@
+//ย้อนศรไม่ได้
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <SPI.h>
@@ -49,7 +50,7 @@ unsigned long t_start = 0;
 unsigned long t_end = 0;
 unsigned long t_buzzer = 0;
 unsigned long lastDetectTime = 0;
-const int detectCooldown = 50;
+const int detectCooldown = 100;
 
 bool sensor_triggered = false;
 
@@ -58,6 +59,7 @@ unsigned long reverse_time = 0;
 
 float speed_kmh = 0;
 float speed_limit = 2.0;
+int buzzerState = 0;
 
 String status = "";
 
@@ -142,19 +144,17 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   Serial.println(message);
 
   // Buzzer control
-  if (message.indexOf("\"buzzer\":1") != -1)
-  {
-    
-    Serial.println("Buzzer ON");
-    ledcWrite(BUZZER_CHANNEL, 120);
-  }
+ if (message.indexOf("\"buzzer\":1") >= 0)
+{
+  buzzerState = 1;
+  Serial.println("Buzzer Enabled");
+}
 
-  if (message.indexOf("\"buzzer\":0") != -1)
-  {
-    Serial.println("Buzzer OFF");
-    ledcWrite(BUZZER_CHANNEL, 0);
-    
-  }
+if (message.indexOf("\"buzzer\":0") >= 0)
+{
+  buzzerState = 0;
+  Serial.println("Buzzer Disabled");
+}
 
   // Speed limit control
   if (message.indexOf("\"speedLimit\":") != -1)
@@ -208,9 +208,8 @@ void setup()
   pinMode(GREEN_LED, OUTPUT);
   pinMode(BUZZER, OUTPUT);
 
-  ledcSetup(BUZZER_CHANNEL, BUZZER_FREQ, BUZZER_RESOLUTION);
-  ledcAttachPin(BUZZER, BUZZER_CHANNEL);
-  ledcWrite(BUZZER_CHANNEL, 0);
+ledcSetup(BUZZER_CHANNEL, BUZZER_FREQ, BUZZER_RESOLUTION);
+ledcAttachPin(BUZZER, BUZZER_CHANNEL);
 }
 
 void loop()
@@ -250,10 +249,12 @@ void loop()
     digitalWrite(RED_LED, HIGH);
     digitalWrite(GREEN_LED, LOW);
 
+    if (buzzerState == 1)
+    {
     ledcWrite(BUZZER_CHANNEL, 150);
     delay(1000);
     ledcWrite(BUZZER_CHANNEL, 0);
-
+    }
     reverse_detected = false;
     lastDetectTime = millis();
     return;
@@ -307,14 +308,13 @@ void loop()
         digitalWrite(RED_LED, HIGH);
         digitalWrite(GREEN_LED, LOW);
 
+        if (buzzerState == 1)
+        {
         ledcWrite(BUZZER_CHANNEL, 10);
         delay(800);
         ledcWrite(BUZZER_CHANNEL, 0);
+        }
 
-        ledcWrite(BUZZER_CHANNEL, 0);
-
-        digitalWrite(GREEN_LED, HIGH);
-        digitalWrite(RED_LED, LOW);
       }
       else
       {
