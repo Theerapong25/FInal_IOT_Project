@@ -17,6 +17,7 @@ const char *mqttClientId = "587ab64a-bfa6-4c2e-8341-f9be792a92df";
 const char *mqttUser = "sy1To3GuqL9gXqFkwh6bYxcHNDL3kWcQ";
 const char *mqttPassword = "gZfUy4ZGLpPznSQqPhejMpn3JSJWsDWV";
 const char *topic_pub = "@msg/lab_ict/speed_data";
+const char *topic_sub = "@msg/lab_ict/speed_control";
 const char *data_pub = "@shadow/data/update";
 PubSubClient mqttClient(wifiClient);
 String publishMessage;
@@ -36,7 +37,7 @@ String publishMessage;
 #define BUZZER 27
 
 #define SENSOR_DISTANCE_CM 26.0
-#define TRIGGER_DISTANCE 30.0
+#define TRIGGER_DISTANCE 20.0
 
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
@@ -52,7 +53,12 @@ const int detectCooldown = 100;
 
 bool sensor_triggered = false;
 
+bool reverse_detected = false;
+unsigned long reverse_time = 0;
+
 float speed_kmh = 0;
+float speed_limit = 2.0;
+
 String status = "";
 
 void setup_wifi()
@@ -78,7 +84,7 @@ void sendToFirebase(float speed_kmh, String status)
 {
   HTTPClient http;
 
-  String url = "https://iotspeed-73afe-default-rtdb.asia-southeast1.firebasedatabase.app/sensorData.json"; // ใส่ Firebase URL ตรงนี้
+  String url = "https://iotspeed-73afe-default-rtdb.asia-southeast1.firebasedatabase.app/sensorData.json";
 
   String speedID = "speed" + String(speedCounter++);
 
@@ -112,6 +118,8 @@ void reconnectMQTT()
     if (mqttClient.connect(mqttClientId, mqttUser, mqttPassword))
     {
       Serial.println("MQTT connected");
+      mqttClient.subscribe(topic_sub);
+      Serial.println("Subscribed to topic: " + String(topic_sub));
     }
     else
     {
@@ -119,6 +127,46 @@ void reconnectMQTT()
       Serial.println(mqttClient.state());
       delay(5000);
     }
+  }
+}
+
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  String message;
+
+  for (unsigned int i = 0; i < length; i++)
+  {
+    message += (char)payload[i];
+  }
+
+  Serial.println(message);
+
+  // Buzzer control
+  if (message.indexOf("\"buzzer\":1") != -1)
+  {
+    
+    Serial.println("Buzzer ON");
+    ledcWrite(BUZZER_CHANNEL, 120);
+  }
+
+  if (message.indexOf("\"buzzer\":0") != -1)
+  {
+    Serial.println("Buzzer OFF");
+    ledcWrite(BUZZER_CHANNEL, 0);
+    
+  }
+
+  // Speed limit control
+  if (message.indexOf("\"speedLimit\":") != -1)
+  {
+    int index = message.indexOf("\"speedLimit\":");
+    String value = message.substring(index + 13);
+    value.replace("}", "");
+
+    speed_limit = value.toFloat();
+
+    Serial.print("New Speed Limit = ");
+    Serial.println(speed_limit);
   }
 }
 
@@ -136,6 +184,7 @@ float readDistance(int trigPin, int echoPin)
   delay(5);
   return distance;
 }
+
 void setup()
 {
   Serial.begin(115200);
@@ -143,6 +192,7 @@ void setup()
   setup_wifi();
 
   mqttClient.setServer(mqttServer, mqttPort);
+  mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(512);
 
   tft.begin();
@@ -179,6 +229,36 @@ void loop()
   float d1 = readDistance(TRIG1, ECHO1);
   float d2 = readDistance(TRIG2, ECHO2);
 
+  // ตรวจจับย้อนศร (Sensor2 ก่อน)
+  if (!sensor_triggered && d2 < TRIGGER_DISTANCE && millis() - lastDetectTime > detectCooldown)
+  {
+    reverse_detected = true;
+    reverse_time = millis();
+  }
+
+  // ถ้า Sensor2 มาก่อน แล้ว Sensor1 ตามมา = ย้อนศร
+  if (reverse_detected && d1 < TRIGGER_DISTANCE)
+  {
+    Serial.println("WRONG WAY DETECTED");
+    status = "WRONG_WAY";
+    tft.fillScreen(ILI9341_BLACK);
+    tft.setTextSize(3);
+    tft.setCursor(40, 100);
+    tft.setTextColor(ILI9341_RED);
+    tft.println("WRONG WAY!");
+
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+
+    ledcWrite(BUZZER_CHANNEL, 150);
+    delay(1000);
+    ledcWrite(BUZZER_CHANNEL, 0);
+
+    reverse_detected = false;
+    lastDetectTime = millis();
+    return;
+  }
+
   if (!sensor_triggered && d1 < TRIGGER_DISTANCE && millis() - lastDetectTime > detectCooldown)
   {
     t_start = millis();
@@ -203,11 +283,6 @@ void loop()
       Serial.print(speed_kmh);
       Serial.println(" km/h");
 
-      publishMessage = "{\"data\":{\"speed\":" + String(speed_kmh, 2) + "}}";
-
-      mqttClient.publish(topic_pub, publishMessage.c_str());
-      mqttClient.publish(data_pub, publishMessage.c_str());
-
       tft.fillScreen(ILI9341_BLACK);
 
       tft.setTextSize(3);
@@ -222,7 +297,7 @@ void loop()
 
       tft.setCursor(20, 140);
 
-      if (speed_kmh > 2)
+      if (speed_kmh > speed_limit)
       {
         status = "OVERSPEED";
 
@@ -233,7 +308,7 @@ void loop()
         digitalWrite(GREEN_LED, LOW);
 
         ledcWrite(BUZZER_CHANNEL, 10);
-        delay(300);
+        delay(800);
         ledcWrite(BUZZER_CHANNEL, 0);
 
         ledcWrite(BUZZER_CHANNEL, 0);
@@ -253,11 +328,19 @@ void loop()
 
         ledcWrite(BUZZER_CHANNEL, 0);
       }
+      publishMessage = "{\"data\":{\"speed\":" + String(speed_kmh, 2) + ",\"status\":\"" + status + "\"}}";
 
+      mqttClient.publish(topic_pub, publishMessage.c_str());
+      mqttClient.publish(data_pub, publishMessage.c_str());
       sendToFirebase(speed_kmh, status);
+
+      Serial.print("Speed Limit = ");
+      Serial.println(speed_limit);
+
     }
 
     sensor_triggered = false;
+    reverse_detected = false;
     lastDetectTime = millis();
   }
 }
