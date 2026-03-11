@@ -49,7 +49,7 @@ unsigned long t_start = 0;
 unsigned long t_end = 0;
 unsigned long t_buzzer = 0;
 unsigned long lastDetectTime = 0;
-const int detectCooldown = 100;
+const int detectCooldown = 50;
 
 bool sensor_triggered = false;
 
